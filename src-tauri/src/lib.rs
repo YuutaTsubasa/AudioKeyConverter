@@ -28,26 +28,6 @@ pub struct ProcessingProgress {
 }
 
 // Get the path to bundled FFmpeg binary
-fn get_ffmpeg_path() -> Result<PathBuf, String> {
-    // In a real implementation, this would point to the bundled FFmpeg binary
-    // For now, we'll try to find it in the system PATH
-    if cfg!(target_os = "windows") {
-        Ok(PathBuf::from("ffmpeg.exe"))
-    } else {
-        Ok(PathBuf::from("ffmpeg"))
-    }
-}
-
-// Get the path to bundled yt-dlp binary
-fn get_ytdlp_path() -> Result<PathBuf, String> {
-    // In a real implementation, this would point to the bundled yt-dlp binary
-    // For now, we'll try to find it in the system PATH
-    if cfg!(target_os = "windows") {
-        Ok(PathBuf::from("yt-dlp.exe"))
-    } else {
-        Ok(PathBuf::from("yt-dlp"))
-    }
-}
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 #[tauri::command]
