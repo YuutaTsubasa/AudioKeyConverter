@@ -1,6 +1,7 @@
 <script>
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
+  import { open } from "@tauri-apps/plugin-dialog";
   import { onMount } from "svelte";
 
   let audioFiles = $state([]);
@@ -11,14 +12,10 @@
   let message = $state("");
   let youtubeUrl = $state("");
   let downloadingYoutube = $state(false);
-  let systemInfo = $state(null);
 
   // File drop handling
   onMount(async () => {
     try {
-      // Get system information
-      systemInfo = await invoke("get_system_info");
-      
       const unlisten = await listen("files-dropped", (event) => {
         handleFilesDrop(event.payload);
       });
@@ -44,6 +41,34 @@
           message = "Error loading file: " + error;
         }
       }
+    }
+  }
+
+  async function selectAudioFiles() {
+    try {
+      const selected = await open({
+        multiple: true,
+        filters: [{
+          name: 'Audio Files',
+          extensions: ['mp3', 'wav', 'flac', 'm4a', 'aac', 'ogg']
+        }]
+      });
+
+      if (selected) {
+        const filePaths = Array.isArray(selected) ? selected : [selected];
+        for (const filePath of filePaths) {
+          try {
+            const fileInfo = await invoke("get_audio_info", { filePath });
+            audioFiles = [...audioFiles, fileInfo];
+          } catch (error) {
+            console.error("Error getting file info:", error);
+            message = "Error loading file: " + error;
+          }
+        }
+      }
+    } catch (error) {
+      console.error("Error selecting files:", error);
+      message = "Error selecting files: " + error;
     }
   }
 
@@ -88,7 +113,23 @@
         url: youtubeUrl,
         outputDir: "."
       });
-      message = result;
+      
+      if (result.success) {
+        message = result.message;
+        
+        // Auto-add the downloaded file to the list if available
+        if (result.file) {
+          audioFiles = [...audioFiles, result.file];
+          
+          // Optionally auto-select the downloaded file
+          selectedFile = result.file;
+        }
+        
+        // Clear the URL after successful download
+        youtubeUrl = "";
+      } else {
+        message = "Error: " + result.message;
+      }
     } catch (error) {
       console.error("Error downloading YouTube audio:", error);
       message = "Error downloading YouTube audio: " + error;
@@ -115,18 +156,6 @@
     const i = Math.floor(Math.log(bytes) / Math.log(k));
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
   }
-
-  // Simulate file selection for demo purposes
-  function simulateFileSelection() {
-    const demoFile = {
-      name: "demo_audio.mp3",
-      path: "/path/to/demo_audio.mp3", 
-      size: 5242880, // 5MB
-      duration: 180.5 // 3 minutes 30 seconds
-    };
-    audioFiles = [...audioFiles, demoFile];
-    message = "Demo file added! (This is just for testing the UI)";
-  }
 </script>
 
 <main class="container">
@@ -138,11 +167,17 @@
     <h2>Audio Files</h2>
     
     <div class="file-input-area">
-      <div class="drop-zone">
+      <div 
+        class="drop-zone" 
+        role="button" 
+        tabindex="0" 
+        onclick={selectAudioFiles}
+        onkeydown={(e) => e.key === 'Enter' && selectAudioFiles()}
+      >
         <p>Drag and drop audio files here</p>
         <p>or</p>
-        <button type="button" onclick={simulateFileSelection} class="select-btn">
-          Add Demo File (for testing)
+        <button type="button" onclick={selectAudioFiles} class="select-btn">
+          Choose Audio Files
         </button>
       </div>
     </div>
@@ -236,40 +271,6 @@
     <div class="message" class:error={message.includes("Error")}>
       {message}
     </div>
-  {/if}
-
-  <!-- System Information -->
-  {#if systemInfo}
-    <section class="system-info">
-      <h2>System Information</h2>
-      <div class="info-grid">
-        <div class="info-item">
-          <span class="label">Platform:</span>
-          <span class="value">{systemInfo.platform}</span>
-        </div>
-        <div class="info-item">
-          <span class="label">Architecture:</span>
-          <span class="value">{systemInfo.arch}</span>
-        </div>
-        <div class="info-item">
-          <span class="label">FFmpeg:</span>
-          <span class="value" class:available={systemInfo.ffmpeg_available} class:unavailable={!systemInfo.ffmpeg_available}>
-            {systemInfo.ffmpeg_available ? 'Available' : 'Not Available'}
-          </span>
-        </div>
-        <div class="info-item">
-          <span class="label">yt-dlp:</span>
-          <span class="value" class:available={systemInfo.ytdlp_available} class:unavailable={!systemInfo.ytdlp_available}>
-            {systemInfo.ytdlp_available ? 'Available' : 'Not Available'}
-          </span>
-        </div>
-      </div>
-      {#if !systemInfo.ffmpeg_available || !systemInfo.ytdlp_available}
-        <div class="system-note">
-          <p><strong>Note:</strong> This is a development build. In the production version, FFmpeg and yt-dlp would be bundled with the application.</p>
-        </div>
-      {/if}
-    </section>
   {/if}
 </main>
 
@@ -499,55 +500,6 @@
   .message.error {
     background: rgba(255, 0, 0, 0.2);
     border-color: rgba(255, 0, 0, 0.5);
-  }
-
-  .system-info {
-    margin-top: 2rem;
-  }
-
-  .info-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-    gap: 1rem;
-    margin-bottom: 1rem;
-  }
-
-  .info-item {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    background: rgba(255, 255, 255, 0.1);
-    padding: 0.5rem 1rem;
-    border-radius: 6px;
-  }
-
-  .info-item .label {
-    font-weight: 500;
-  }
-
-  .info-item .value {
-    font-weight: bold;
-  }
-
-  .info-item .value.available {
-    color: #4ade80;
-  }
-
-  .info-item .value.unavailable {
-    color: #f87171;
-  }
-
-  .system-note {
-    background: rgba(255, 193, 7, 0.2);
-    border: 1px solid rgba(255, 193, 7, 0.5);
-    padding: 1rem;
-    border-radius: 8px;
-    margin-top: 1rem;
-  }
-
-  .system-note p {
-    margin: 0;
-    font-size: 0.9rem;
   }
 
   @media (max-width: 768px) {
