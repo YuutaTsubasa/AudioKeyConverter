@@ -1,7 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use tokio::process::Command; // Use tokio::process::Command for async operations
-use std::env;
 use tauri::{Listener, Emitter}; // Import Listener trait for listening to events
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -165,7 +164,7 @@ async fn get_audio_duration(file_path: &str) -> Result<f64, String> {
 async fn download_youtube_audio(
     url: String,
     output_dir: String,
-) -> Result<String, String> {
+) -> Result<serde_json::Value, String> {
     if !url.contains("youtube.com") && !url.contains("youtu.be") {
         return Err("Invalid YouTube URL".to_string());
     }
@@ -178,6 +177,7 @@ async fn download_youtube_audio(
             "-x",
             "--audio-format", "mp3",
             "--audio-quality", "0",
+            "--print", "after_move:filepath",
             "-o", &output_template,
             &url
         ])
@@ -190,9 +190,38 @@ async fn download_youtube_audio(
     }
     
     // Parse output to get downloaded file path
-    let _stdout = String::from_utf8_lossy(&output.stdout);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lines: Vec<&str> = stdout.trim().split('\n').collect();
     
-    Ok(format!("Successfully downloaded: {}", url))
+    // The last line should contain the file path
+    if let Some(file_path) = lines.last() {
+        let file_path = file_path.trim();
+        if !file_path.is_empty() && std::path::Path::new(file_path).exists() {
+            // Get file info for the downloaded file
+            match get_audio_info(file_path.to_string()).await {
+                Ok(file_info) => {
+                    return Ok(serde_json::json!({
+                        "success": true,
+                        "message": format!("Successfully downloaded: {}", url),
+                        "file": file_info
+                    }));
+                }
+                Err(_) => {
+                    return Ok(serde_json::json!({
+                        "success": true,
+                        "message": format!("Successfully downloaded: {}", url),
+                        "file": null
+                    }));
+                }
+            }
+        }
+    }
+    
+    Ok(serde_json::json!({
+        "success": true,
+        "message": format!("Successfully downloaded: {}", url),
+        "file": null
+    }))
 }
 
 fn get_bundled_ytdlp_path() -> Result<PathBuf, String> {
@@ -214,52 +243,16 @@ fn get_bundled_ytdlp_path() -> Result<PathBuf, String> {
     Ok(ytdlp_path)
 }
 
-#[tauri::command]
-async fn get_system_info() -> Result<serde_json::Value, String> {
-    let info = serde_json::json!({
-        "platform": env::consts::OS,
-        "arch": env::consts::ARCH,
-        "ffmpeg_available": check_ffmpeg_available().await,
-        "ytdlp_available": check_ytdlp_available().await,
-    });
-    
-    Ok(info)
-}
-
-async fn check_ffmpeg_available() -> bool {
-    // Check if FFmpeg is available
-    match Command::new("ffmpeg")
-        .arg("-version")
-        .output()
-        .await 
-    {
-        Ok(output) => output.status.success(),
-        Err(_) => false,
-    }
-}
-
-async fn check_ytdlp_available() -> bool {
-    // Check if yt-dlp is available
-    match Command::new("yt-dlp")
-        .arg("--version")
-        .output()
-        .await 
-    {
-        Ok(output) => output.status.success(),
-        Err(_) => false,
-    }
-}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
             greet,
             process_audio_file,
             get_audio_info,
-            download_youtube_audio,
-            get_system_info
+            download_youtube_audio
         ])
         .setup(|app| {
             // Set up file drop handling
