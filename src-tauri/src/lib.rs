@@ -65,56 +65,46 @@ async fn process_audio_file(
         return Err("Input file does not exist".to_string());
     }
     
-    // Validate file extension
-    let ext = input_path
-        .extension()
-        .and_then(|s| s.to_str())
-        .unwrap_or("")
-        .to_lowercase();
-    
-    if !["mp3", "wav", "flac", "m4a", "aac", "ogg"].contains(&ext.as_str()) {
-        return Err("Unsupported audio format".to_string());
-    }
-    
-    // For demonstration, we'll simulate the FFmpeg processing
-    // In a real implementation, this would call FFmpeg with proper pitch shifting
-    let pitch_shift_desc = if options.semitones > 0 {
-        format!("raised by {} semitones", options.semitones)
-    } else if options.semitones < 0 {
-        format!("lowered by {} semitones", options.semitones.abs())
-    } else {
-        "unchanged (0 semitones)".to_string()
-    };
-    
-    // Simulate processing time
-    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-    
-    // TODO: Implement actual FFmpeg processing
-    /*
-    let ffmpeg_path = get_ffmpeg_path()?;
+    let ffmpeg_path = get_bundled_ffmpeg_path()?;
     let pitch_factor = 2.0_f64.powf(options.semitones as f64 / 12.0);
     
     let output = Command::new(ffmpeg_path)
         .args([
             "-i", &file_path,
             "-af", &format!("asetrate=44100*{},aresample=44100", pitch_factor),
+            "-f", &options.output_format,
             "-y", &options.output_path
         ])
         .output()
+        .await
         .map_err(|e| format!("Failed to execute FFmpeg: {}", e))?;
     
     if !output.status.success() {
         return Err(format!("FFmpeg error: {}", String::from_utf8_lossy(&output.stderr)));
     }
-    */
     
-    Ok(format!(
-        "Audio processing completed!\nFile: {}\nPitch: {}\nOutput format: {}\nOutput: {}",
-        input_path.file_name().unwrap_or_default().to_string_lossy(),
-        pitch_shift_desc,
-        options.output_format.to_uppercase(),
-        options.output_path
-    ))
+    Ok(format!("Successfully processed {} with {} semitones shift", 
+               input_path.file_name().unwrap_or_default().to_string_lossy(),
+               options.semitones))
+}
+
+fn get_bundled_ffmpeg_path() -> Result<PathBuf, String> {
+    let mut exe_dir = std::env::current_exe()
+        .map_err(|e| format!("Failed to get executable directory: {}", e))?;
+    exe_dir.pop(); // Remove executable name
+    
+    #[cfg(target_os = "windows")]
+    let ffmpeg_name = "ffmpeg.exe";
+    #[cfg(not(target_os = "windows"))]
+    let ffmpeg_name = "ffmpeg";
+    
+    let ffmpeg_path = exe_dir.join(ffmpeg_name);
+    
+    if !ffmpeg_path.exists() {
+        return Err("FFmpeg binary not found in application directory".to_string());
+    }
+    
+    Ok(ffmpeg_path)
 }
 
 #[tauri::command]
@@ -131,53 +121,68 @@ async fn get_audio_info(file_path: String) -> Result<AudioFile, String> {
         .unwrap_or("Unknown")
         .to_string();
     
+    // Get duration using FFprobe
+    let duration = get_audio_duration(&file_path).await.ok();
+    
     let format = path
         .extension()
         .and_then(|s| s.to_str())
         .map(|s| s.to_uppercase());
     
-    // TODO: Use FFprobe to get actual duration
-    // For now, estimate based on file size (very rough estimate)
-    let estimated_duration = if metadata.len() > 0 {
-        Some((metadata.len() as f64) / 128000.0) // Assume 128kbps average
-    } else {
-        None
-    };
-    
     Ok(AudioFile {
         name: file_name,
         path: file_path,
         size: metadata.len(),
-        duration: estimated_duration,
+        duration,
         format,
     })
 }
 
+async fn get_audio_duration(file_path: &str) -> Result<f64, String> {
+    let ffprobe_path = get_bundled_ffprobe_path()?;
+    
+    let output = Command::new(ffprobe_path)
+        .args([
+            "-v", "quiet",
+            "-show_entries", "format=duration",
+            "-of", "csv=p=0",
+            file_path
+        ])
+        .output()
+        .await
+        .map_err(|e| format!("Failed to execute FFprobe: {}", e))?;
+    
+    if !output.status.success() {
+        return Err("Failed to get audio duration".to_string());
+    }
+    
+    let duration_str = String::from_utf8_lossy(&output.stdout);
+    duration_str.trim().parse::<f64>()
+        .map_err(|e| format!("Failed to parse duration: {}", e))
+}
+
 #[tauri::command]
 async fn download_youtube_audio(
-    url: String, 
-    output_dir: String
+    url: String,
+    output_dir: String,
 ) -> Result<String, String> {
-    // Validate YouTube URL
     if !url.contains("youtube.com") && !url.contains("youtu.be") {
         return Err("Invalid YouTube URL".to_string());
     }
     
-    // Simulate download process
-    tokio::time::sleep(tokio::time::Duration::from_millis(1000)).await;
+    let ytdlp_path = get_bundled_ytdlp_path()?;
+    let output_template = format!("{}/%(title)s.%(ext)s", output_dir);
     
-    // TODO: Implement actual yt-dlp integration
-    /*
-    let ytdlp_path = get_ytdlp_path()?;
     let output = Command::new(ytdlp_path)
         .args([
             "-x",
             "--audio-format", "mp3",
             "--audio-quality", "0",
-            "-o", &format!("{}/%(title)s.%(ext)s", output_dir),
+            "-o", &output_template,
             &url
         ])
         .output()
+        .await
         .map_err(|e| format!("Failed to execute yt-dlp: {}", e))?;
     
     if !output.status.success() {
@@ -186,13 +191,27 @@ async fn download_youtube_audio(
     
     // Parse output to get downloaded file path
     let stdout = String::from_utf8_lossy(&output.stdout);
-    // Extract filename from yt-dlp output
-    */
     
-    Ok(format!(
-        "YouTube download simulation completed!\nURL: {}\nOutput directory: {}\n\nNote: This is a demonstration. In the full implementation, yt-dlp would download the audio file automatically.",
-        url, output_dir
-    ))
+    Ok(format!("Successfully downloaded: {}", url))
+}
+
+fn get_bundled_ytdlp_path() -> Result<PathBuf, String> {
+    let mut exe_dir = std::env::current_exe()
+        .map_err(|e| format!("Failed to get executable directory: {}", e))?;
+    exe_dir.pop();
+    
+    #[cfg(target_os = "windows")]
+    let ytdlp_name = "yt-dlp.exe";
+    #[cfg(not(target_os = "windows"))]
+    let ytdlp_name = "yt-dlp";
+    
+    let ytdlp_path = exe_dir.join(ytdlp_name);
+    
+    if !ytdlp_path.exists() {
+        return Err("yt-dlp binary not found in application directory".to_string());
+    }
+    
+    Ok(ytdlp_path)
 }
 
 #[tauri::command]
