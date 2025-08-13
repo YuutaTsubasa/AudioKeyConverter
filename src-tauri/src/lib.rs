@@ -1,7 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use tokio::process::Command; // Use tokio::process::Command for async operations
 use std::env;
+use tauri::{Listener, Emitter}; // Import Listener trait for listening to events
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct AudioFile {
@@ -107,6 +108,25 @@ fn get_bundled_ffmpeg_path() -> Result<PathBuf, String> {
     Ok(ffmpeg_path)
 }
 
+fn get_bundled_ffprobe_path() -> Result<PathBuf, String> {
+    let mut exe_dir = std::env::current_exe()
+        .map_err(|e| format!("Failed to get executable directory: {}", e))?;
+    exe_dir.pop(); // Remove executable name
+    
+    #[cfg(target_os = "windows")]
+    let ffprobe_name = "ffprobe.exe";
+    #[cfg(not(target_os = "windows"))]
+    let ffprobe_name = "ffprobe";
+    
+    let ffprobe_path = exe_dir.join(ffprobe_name);
+    
+    if !ffprobe_path.exists() {
+        return Err("FFprobe binary not found in application directory".to_string());
+    }
+    
+    Ok(ffprobe_path)
+}
+
 #[tauri::command]
 async fn get_audio_info(file_path: String) -> Result<AudioFile, String> {
     let path = Path::new(&file_path);
@@ -190,7 +210,7 @@ async fn download_youtube_audio(
     }
     
     // Parse output to get downloaded file path
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let _stdout = String::from_utf8_lossy(&output.stdout);
     
     Ok(format!("Successfully downloaded: {}", url))
 }
@@ -219,29 +239,35 @@ async fn get_system_info() -> Result<serde_json::Value, String> {
     let info = serde_json::json!({
         "platform": env::consts::OS,
         "arch": env::consts::ARCH,
-        "ffmpeg_available": check_ffmpeg_available(),
-        "ytdlp_available": check_ytdlp_available(),
+        "ffmpeg_available": check_ffmpeg_available().await,
+        "ytdlp_available": check_ytdlp_available().await,
     });
     
     Ok(info)
 }
 
-fn check_ffmpeg_available() -> bool {
+async fn check_ffmpeg_available() -> bool {
     // Check if FFmpeg is available
-    Command::new("ffmpeg")
+    match Command::new("ffmpeg")
         .arg("-version")
         .output()
-        .map(|output| output.status.success())
-        .unwrap_or(false)
+        .await 
+    {
+        Ok(output) => output.status.success(),
+        Err(_) => false,
+    }
 }
 
-fn check_ytdlp_available() -> bool {
+async fn check_ytdlp_available() -> bool {
     // Check if yt-dlp is available
-    Command::new("yt-dlp")
+    match Command::new("yt-dlp")
         .arg("--version")
         .output()
-        .map(|output| output.status.success())
-        .unwrap_or(false)
+        .await 
+    {
+        Ok(output) => output.status.success(),
+        Err(_) => false,
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -261,36 +287,42 @@ pub fn run() {
             {
                 use tauri::Manager;
                 let window = app.get_webview_window("main").unwrap();
-                window.on_file_drop(|window, event| {
-                    match event {
-                        tauri::webview::FileDropEvent::Hovered { paths, position: _ } => {
-                            println!("Files hovered: {:?}", paths);
-                            let _ = window.emit("files-hovered", paths);
-                        }
-                        tauri::webview::FileDropEvent::Dropped { paths, position: _ } => {
-                            println!("Files dropped: {:?}", paths);
-                            // Filter for audio files only
-                            let audio_files: Vec<String> = paths
-                                .into_iter()
-                                .filter(|path| {
-                                    let ext = Path::new(path)
-                                        .extension()
-                                        .and_then(|s| s.to_str())
-                                        .unwrap_or("")
-                                        .to_lowercase();
-                                    ["mp3", "wav", "flac", "m4a", "aac", "ogg"].contains(&ext.as_str())
-                                })
-                                .collect();
-                            
-                            let _ = window.emit("files-dropped", audio_files);
-                        }
-                        tauri::webview::FileDropEvent::Cancelled => {
-                            println!("File drop cancelled");
-                            let _ = window.emit("files-drop-cancelled", ());
-                        }
-                        _ => {}
+                
+                // In Tauri v2, file drop events are handled differently through window events
+                let window_clone = window.clone();
+                window.listen("tauri://file-drop", move |event| {
+                    if let Ok(paths) = serde_json::from_str::<Vec<String>>(event.payload()) {
+                        println!("Files dropped: {:?}", paths);
+                        
+                        // Filter for audio files only
+                        let audio_files: Vec<String> = paths
+                            .into_iter()
+                            .filter(|path| {
+                                let ext = Path::new(path)
+                                    .extension()
+                                    .and_then(|s| s.to_str())
+                                    .unwrap_or("")
+                                    .to_lowercase();
+                                ["mp3", "wav", "flac", "m4a", "aac", "ogg"].contains(&ext.as_str())
+                            })
+                            .collect();
+                        
+                        let _ = window_clone.emit("files-dropped", audio_files);
                     }
-                    true
+                });
+
+                let window_clone = window.clone();
+                window.listen("tauri://file-drop-hover", move |event| {
+                    if let Ok(paths) = serde_json::from_str::<Vec<String>>(event.payload()) {
+                        println!("Files hovered: {:?}", paths);
+                        let _ = window_clone.emit("files-hovered", paths);
+                    }
+                });
+
+                let window_clone = window.clone();
+                window.listen("tauri://file-drop-cancelled", move |_event| {
+                    println!("File drop cancelled");
+                    let _ = window_clone.emit("files-drop-cancelled", ());
                 });
             }
             Ok(())
